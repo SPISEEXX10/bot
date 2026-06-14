@@ -173,9 +173,12 @@ async def ws_handler(ws):
             data = json.loads(raw)
             if data.get("type") == "hello":
                 nick = data["nick"]
-                server = data.get("server", "???")
+                server = data.get("server", "...")
                 connected_players[nick] = {"ws": ws, "server": server}
                 print(f"[WS] Подключился: {nick} @ {server}")
+                await update_panel()
+            elif data.get("type") == "server" and nick in connected_players:
+                connected_players[nick]["server"] = data["server"]
                 await update_panel()
     except Exception as e:
         print(f"[WS] Ошибка: {e}")
