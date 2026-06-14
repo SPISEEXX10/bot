@@ -80,6 +80,10 @@ class TrollView(discord.ui.View):
     async def fakedisco(self, interaction, button):
         await self.send_cmd(interaction, "fakedisco", "Фейк-дисконнект")
 
+    @discord.ui.button(label="🍌 Бананчик", style=discord.ButtonStyle.danger, row=3)
+    async def banchik(self, interaction, button):
+        await self.send_cmd(interaction, "banana", "Бананчик запущен 🍌")
+
     @discord.ui.button(label="🔄 Обновить список", style=discord.ButtonStyle.success, row=3)
     async def refresh(self, interaction, button):
         await interaction.response.edit_message(
