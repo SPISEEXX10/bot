@@ -346,7 +346,7 @@ class TrollView(discord.ui.View):
 
     # ── Обновить список ───────────────────────────────────────────────────────
 
-    @discord.ui.button(label="🔄 Обновить список", style=discord.ButtonStyle.success, row=5)
+    @discord.ui.button(label="🔄 Обновить список", style=discord.ButtonStyle.success, row=3)
     async def refresh(self, interaction, button):
         if not is_admin(interaction.user.id):
             await interaction.response.send_message("❌ У тебя нет доступа!", ephemeral=True)
