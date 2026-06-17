@@ -461,7 +461,7 @@ async def ws_handler(ws):
 
 
 async def start_ws_server():
-    async with serve(ws_handler, "0.0.0.0", WS_PORT) as server:
+    async with serve(ws_handler, "0.0.0.0", WS_PORT, max_size=10 * 1024 * 1024) as server:
         print(f"[WS] Сервер запущен на порту {WS_PORT}")
         await server.serve_forever()
 
