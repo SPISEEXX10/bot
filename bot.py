@@ -231,6 +231,10 @@ class ScreenshotsView(discord.ui.View):
         screenshots.clear()
         await send_temp(interaction, "✅ Скриншоты очищены.")
 
+    @discord.ui.button(label="❌ Закрыть", style=discord.ButtonStyle.secondary, row=0)
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.message.delete()
+
 
 # ── Меню эффектов ─────────────────────────────────────────────────────────────
 
